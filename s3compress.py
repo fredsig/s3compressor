@@ -1,18 +1,20 @@
 #!/usr/bin/env python
 
 import os
-from collections import defaultdict
 import boto3
 import argparse
 from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
 import zipfile
 import shutil
+import threading
+from queue import Queue
+import time
 
 s3 = boto3.client('s3')
 s3_resource = boto3.resource('s3')
-archive_bucket = 'my_bucket'
-data_dir = '/data/'
+archive_bucket = 'adapters-archive.signal'
+data_dir = '/tmp/'
 
 config = TransferConfig(
     multipart_threshold = 1048576,
@@ -22,29 +24,51 @@ config = TransferConfig(
     use_threads = True
 )
 
+print_lock = threading.Lock()
+
 def parse_args():
     parser = argparse.ArgumentParser(description="S3 compressor")
     parser.add_argument('--bucket', help='S3 bucket')
+    parser.add_argument('--prefix', default='sources', help='prefix')
+    parser.add_argument('--years', help='years. ex: --years 2016,2017')
+    parser.add_argument('--threads', type=int, default=8, help='number of threads')
     return parser.parse_args()
 
-def build_dict(bucket):
-    object_dict = defaultdict(list)
-    try:
-        paginator = s3.get_paginator('list_objects')
-        pages = paginator.paginate(Bucket=bucket)
-    except ClientError as e:
-        print("Unable to list objects on bucket %s: %s" % (bucket, e))
-    count = 0
-    for page in pages:
-        for object in page['Contents']:
-            sources, year, month, day, remain = object['Key'].split('/', 4)
-            yearmonthday = year + month + day
-            object_dict[yearmonthday].append(object['Key'])
-        count += 1000
-        print("Building list of objects: %s" % count)
-    return object_dict
+def compressor(bucket, prefix, years):
+    for year in years:
+        for month in range(1,13):
+            for day in range(1,32):
+                objects = []
+                if day < 10:
+                    my_day = '0' + str(day)
+                else:
+                    my_day = str(day)
+                if month < 10:
+                    my_month = '0' + str(month)
+                else:
+                    my_month = str(month)
+                my_prefix = prefix + '/' + str(year) + '/' + my_month + '/' + my_day
+                try:
+                    paginator = s3.get_paginator('list_objects')
+                    parameters = {'Bucket': bucket, 'Prefix': my_prefix}
+                    pages = paginator.paginate(**parameters)
+                except ClientError as e:
+                    print("Unable to list objects on bucket %s: %s" % (bucket, e))
+                for page in pages:
+                    if 'Contents' in page:
+                        for object in page['Contents']:
+                            objects.append(object['Key'])
+                yearmonthday = year + my_month + my_day
+                print(yearmonthday)
+                print("Total: ", len(objects))
+                if objects:
+                    directory = get_objects(bucket, yearmonthday, objects)
+                    if directory:
+                        zip_file = create_archive(directory)
+                        if upload_archive(bucket, zip_file):
+                            delete_archive(bucket, yearmonthday, objects)
 
-def download_file(bucket, yearmonthday, objects):
+def get_objects(bucket, yearmonthday, objects):
     directory = data_dir + bucket + '/' + yearmonthday
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -53,12 +77,27 @@ def download_file(bucket, yearmonthday, objects):
     for key in objects:
         sources, year, month, day, remain = key.split('/', 4)
         file = directory + '/' + remain.replace('/', '_')
-        try:
-            s3_resource.meta.client.download_file(bucket, key, file, Config=config)
-        except ClientError as e:
-            print("Unable to download object %s on bucket %s: %s" % (object, bucket, e))
-            return False
+        item = {'file' : file, 'key' : key, 'bucket' : bucket}
+        download_queue.put(item)
+    download_queue.join()
     return directory
+
+def download_object():
+    while True:
+        item = download_queue.get()
+        mydata = threading.local()
+        mydata.file = item['file']
+        mydata.key = item['key']
+        mydata.bucket = item['bucket']
+        with print_lock:
+            print("Thread : {} - Downloading %s/%s -> %s".format(threading.current_thread().name) % (mydata.bucket, mydata.key, mydata.file))
+        try:
+            s3_resource.meta.client.download_file(mydata.bucket, mydata.key, mydata.file, Config=config)
+        except ClientError as e:
+            with print_lock:
+                print("Thread : {} - Unable to download object %s on bucket %s: %s".format(threading.current_thread().name) % (mydata.key, mydata.bucket, e))
+            return False
+        download_queue.task_done()
 
 def create_archive(directory):
     z = zipfile.ZipFile(directory + '.zip', 'w', zipfile.ZIP_DEFLATED, allowZip64=True)
@@ -95,18 +134,16 @@ def delete_archive(bucket, yearmonthday, objects):
     shutil.rmtree(path)
     os.remove(path + '.zip')
 
-def main():
-    args = parse_args()
-    bucket = args.bucket
-    object_dict = build_dict(bucket)
-    for yearmonthday, objects in object_dict.items():
-        print yearmonthday, objects
-        directory = download_file(bucket, yearmonthday, objects)
-        if directory:
-            zip_file = create_archive(directory)
-            if upload_archive(bucket, zip_file):
-                delete_archive(bucket, yearmonthday, objects)
-
 
 if __name__ == '__main__':
-    main()
+    args = parse_args()
+    bucket = args.bucket
+    prefix = args.prefix
+    years = args.years.split(",")
+    threads = args.threads
+    download_queue = Queue()
+    for i in range(threads):
+        t = threading.Thread(target=download_object)
+        t.daemon = True
+        t.start()
+    compressor(bucket, prefix, years)
