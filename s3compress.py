@@ -67,6 +67,8 @@ def compressor(bucket, prefix, years):
                         zip_file = create_archive(directory)
                         if upload_archive(bucket, zip_file):
                             delete_archive(bucket, yearmonthday, objects)
+                    else:
+                        print("Not deleting files locally or source bucket.")
 
 def get_objects(bucket, yearmonthday, objects):
     directory = data_dir + bucket + '/' + yearmonthday
@@ -80,7 +82,11 @@ def get_objects(bucket, yearmonthday, objects):
         item = {'file' : file, 'key' : key, 'bucket' : bucket}
         download_queue.put(item)
     download_queue.join()
-    return directory
+    if not download_queue_dead.empty():
+        print("Download failure for one more objects on bucket %s." % download_queue_dead.get())
+        return False
+    else:
+        return directory
 
 def download_object():
     while True:
@@ -96,7 +102,7 @@ def download_object():
         except ClientError as e:
             with print_lock:
                 print("Thread : {} - Unable to download object %s on bucket %s: %s".format(threading.current_thread().name) % (mydata.key, mydata.bucket, e))
-            return False
+                download_queue_dead.put(mydata.bucket)
         download_queue.task_done()
 
 def create_archive(directory):
@@ -123,17 +129,28 @@ def upload_archive(bucket, zip_file):
 
 def delete_archive(bucket, yearmonthday, objects):
     for object in objects:
-        print("Deleting %s from %s" % (object, bucket))
-        try:
-            delete = s3_resource.Object(bucket, object).delete()
-        except ClientError as e:
-            print("Unable to delete object %s on bucket %s: %s" % (object, bucket, e))
-            return False
+        item = {'object' : object, 'bucket' : bucket}
+        delete_queue.put(item)
+    download_queue.join()
     path = data_dir + bucket + '/' + yearmonthday
     print("Deleting %s/*" % path)
     shutil.rmtree(path)
     os.remove(path + '.zip')
 
+def delete_object():
+    while True:
+        item = delete_queue.get()
+        mydata = threading.local()
+        mydata.object = item['object']
+        mydata.bucket = item['bucket']
+        with print_lock:
+            print("Thread : {} - Deleting %s from %s".format(threading.current_thread().name) % (mydata.object, mydata.bucket))
+        try:
+            delete = s3_resource.Object(bucket, mydata.object).delete()
+        except ClientError as e:
+            with print_lock:
+                print("Thread : {} - Unable to delete object %s on bucket %s: %s".format(threading.current_thread().name) % (mydata.object, mydata.bucket, e))
+        delete_queue.task_done()
 
 if __name__ == '__main__':
     args = parse_args()
@@ -142,8 +159,14 @@ if __name__ == '__main__':
     years = args.years.split(",")
     threads = args.threads
     download_queue = Queue()
+    download_queue_dead = Queue()
+    delete_queue = Queue()
     for i in range(threads):
         t = threading.Thread(target=download_object)
+        t.daemon = True
+        t.start()
+    for i in range(threads):
+        t = threading.Thread(target=delete_object)
         t.daemon = True
         t.start()
     compressor(bucket, prefix, years)
