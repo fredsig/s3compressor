@@ -131,7 +131,7 @@ def delete_archive(bucket, yearmonthday, objects):
     for object in objects:
         item = {'object' : object, 'bucket' : bucket}
         delete_queue.put(item)
-    download_queue.join()
+    delete_queue.join()
     path = data_dir + bucket + '/' + yearmonthday
     print("Deleting %s/*" % path)
     shutil.rmtree(path)
