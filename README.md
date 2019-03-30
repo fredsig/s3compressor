@@ -4,12 +4,20 @@ Although storage pricing is cheap, using S3 Lifecycle to transition millions of 
 
 ```
 sources/2017/02/10/0/6/my_file.xml
-sources/2017/02/11/1/2/my_file.xml
+sources/2017/02/10/0/8/my_file.xml
+sources/2018/04/11/1/2/my_file.xml
+sources/2018/04/11/1/3/my_file.xml
+```
+Example of path structure for the archive bucket:
+
+```
+source-bucket/20170210.zip
+source-bucket2/20180411.zip
 ```
 
 The default prefix argument is ``sources`` and it can be changed easily. The same can be said for the path structure, although the code has to be modified.
 
-It makes use of Python threads for faster i/o on object downloads and deletes. It also uses boto3's multipart upload and concurrency. You might want to adjust the config for your own use case.
+It makes use of [Python threads](https://www.ploggingdev.com/2017/01/multiprocessing-and-multithreading-in-python-3/) for network i/o on object downloads and deletes. It also uses boto3's multipart upload and concurrency. You might want to adjust the config for your own use case.
 Compression is made using zip64, which is single process/core.
 
 ## Requirements
