@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Copyright 2019 Frederico Marques
 
 import os
 import boto3
@@ -13,7 +14,6 @@ import time
 
 s3 = boto3.client('s3')
 s3_resource = boto3.resource('s3')
-archive_bucket = 'adapters-archive.signal'
 data_dir = '/tmp/'
 
 config = TransferConfig(
@@ -28,9 +28,10 @@ print_lock = threading.Lock()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="S3 compressor")
-    parser.add_argument('--bucket', help='S3 bucket')
+    parser.add_argument('--arch_bucket', help='Destination Archive bucket', required=True)
+    parser.add_argument('--bucket', help='Source bucket', required=True)
     parser.add_argument('--prefix', default='sources', help='prefix')
-    parser.add_argument('--years', help='years. ex: --years 2016,2017')
+    parser.add_argument('--years', help='years. ex: --years 2016,2017', required=True)
     parser.add_argument('--threads', type=int, default=8, help='number of threads')
     return parser.parse_args()
 
@@ -154,6 +155,7 @@ def delete_object():
 
 if __name__ == '__main__':
     args = parse_args()
+    archive_bucket = args.arch_bucket
     bucket = args.bucket
     prefix = args.prefix
     years = args.years.split(",")
