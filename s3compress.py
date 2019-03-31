@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--threads', type=int, default=8, help='number of threads')
     return parser.parse_args()
 
-def compressor(bucket, prefix, years):
+def compressor(archive_bucket, bucket, prefix, years):
     for year in years:
         for month in range(1,13):
             for day in range(1,32):
@@ -66,7 +66,7 @@ def compressor(bucket, prefix, years):
                     directory = get_objects(bucket, yearmonthday, objects)
                     if directory:
                         zip_file = create_archive(directory)
-                        if upload_archive(bucket, zip_file):
+                        if upload_archive(archive_bucket, bucket, zip_file):
                             delete_archive(bucket, yearmonthday, objects)
                     else:
                         print("Not deleting files locally or source bucket.")
@@ -115,7 +115,7 @@ def create_archive(directory):
     z.close()
     return directory + '.zip'
 
-def upload_archive(bucket, zip_file):
+def upload_archive(archive_bucket, bucket, zip_file):
     key = bucket + '/' + zip_file.split(data_dir + bucket + '/')[1]
     upload_args = {
         'StorageClass' : 'GLACIER'
@@ -171,4 +171,4 @@ if __name__ == '__main__':
         t = threading.Thread(target=delete_object)
         t.daemon = True
         t.start()
-    compressor(bucket, prefix, years)
+    compressor(archive_bucket, bucket, prefix, years)
